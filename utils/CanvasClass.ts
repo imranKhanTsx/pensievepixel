@@ -3,6 +3,7 @@ import { FineTuneTypes } from "@/packages/store/atoms/FinetuneAtom";
 import { ImageEffect } from "./ImageEffect";
 import { arc, arc2, pointsArray, point, point2, RGBA, shape, text, ellipse } from "./Interface";
 import { ShapeManager } from "./ShapeManger";
+import { Frame as shapeFrame } from "./Frame";
 
 
 interface ImagePosition {
@@ -47,7 +48,7 @@ export class CanvasDraw {
     private SelectedImage: ImagePosition = { px: null, py: null, index: null,w:null,h:null };
     private Origin = { x: 0, y: 0 };
     private InterativeRectangle={x:0,y:0};
-    private FrameCodinate:{cornerRact:point[],size:number,circlePoint:{x:number,y:number,radius:number}}={cornerRact:[],size:0,circlePoint:{y:0,x:0,radius:0}};//this is for showng
+    private FrameCodinate:{frameCorner:point2[],cornerRact:point[],size:number,circlePoint:{x:number,y:number,radius:number}}={frameCorner:[],cornerRact:[],size:0,circlePoint:{y:0,x:0,radius:0}};//this is for showng
     // for resize image
     private corner:null|number=null;
     public changeAspect:boolean=false;
@@ -84,6 +85,10 @@ export class CanvasDraw {
     public panning:boolean=false;
     // image_frameARR --> first start with the image frame then outhers
     // image_FrameArr:Frame[]=[];
+    public resizeFrame:{width:number;height:number;mx:number,my:number}|null=null;
+
+    // frame array
+    public frameArray:{type:shapeType,index:number,frame:shapeFrame}[]=[];
     constructor(canvas: HTMLCanvasElement,interactiveCanvas:HTMLCanvasElement, image?: HTMLImageElement) {
         this.StaticCanvas = canvas
         this.InteractiveCanvas=interactiveCanvas;
@@ -177,7 +182,13 @@ export class CanvasDraw {
             const polygonShape = this.ShapeManger!.polygonShapes[polygonIndex];
             const {maxPoints,minPoints} = this.getMaxMin_points(polygonShape);
             this.clearInteractive();
-            this.drawFrame(minPoints.x,minPoints.y,maxPoints.x-minPoints.x,maxPoints.y-minPoints.y);
+            // this.drawFrame(minPoints.x,minPoints.y,maxPoints.x-minPoints.x,maxPoints.y-minPoints.y);
+            this.frameArray.forEach(v=>{
+                if (v.type==='polygon' && v.index===polygonIndex) {
+                    v.frame.updateShape(polygonShape);
+                    v.frame.drawFrame();
+                }
+            });
             // this.selectedPolygon={polygon:polygonShape,index:polygonIndex};
             this.selectedShape2={element:'polygon',index:polygonIndex};
         }
@@ -230,9 +241,16 @@ export class CanvasDraw {
             const {startPoint}=this.ShapeManger!.textContent[textIndex];
             this.dragText = {index:textIndex,dx:e.clientX-startPoint.x,dy:e.clientY-startPoint.y};
         }
-        else if (check!==null && check<4 && this.SelectedImage.index!==null) {
+        else if (check!==null && check<4 && this.selectedShape2?.element==='image') {
             this.mode='imageResize';
             this.corner=check
+        }
+        else if (check!==null && check<4 && this.selectedShape2?.element==='polygon') {
+            const {frameCorner}=this.FrameCodinate;
+            const topLeft = frameCorner[0];
+            const bottomRight=frameCorner[1];
+            this.resizeFrame = {width:bottomRight.x-topLeft.x,height:bottomRight.y-topLeft.y,mx:e.clientX,my:e.clientY}
+            this.mode='resize';
         }
         else if (check===4 && this.selectedShape2) {
             this.mode='rotate';
@@ -422,6 +440,38 @@ export class CanvasDraw {
                 this.ShapeManger?.drawLine(this.currentShape.startPoint,this.currentShape.endPoint);
             }
         }
+        else if (this.mode==='resize' && this.resizeFrame) {
+            const {mx,my,height,width}=this.resizeFrame;
+            const dx = e.clientX-mx;
+            const dy = e.clientY-my;
+            const newWidth = width+dx;
+            const newHeight = height+dy;
+            const scaleX = newWidth/width;
+            const scaleY = newHeight/height;
+            const {element,index}=this.selectedShape2!;
+            const polygon = this.ShapeManger!.polygonShapes[index];
+            const {maxPoints,minPoints}=this.getMaxMin_points(polygon);
+            const centerPoint = {x:minPoints.x+(maxPoints.x-minPoints.x)/2,y:minPoints.y+(maxPoints.y-minPoints.y)/2}
+            polygon.forEach(v=>{
+                const dist = this.ShapeManger!.calculateDistance(centerPoint,v);
+                const newPX = centerPoint.x+dist*scaleX;
+                const newPY = centerPoint.y+dist*scaleY;
+                v.x=newPX;
+                v.y=newPY
+            })
+            const Points=this.getMaxMin_points(polygon);
+            this.clearInteractive();
+            this.drawFrame(Points.minPoints.x,Points.minPoints.y,Points.maxPoints.x-Points.minPoints.x,Points.maxPoints.y-Points.minPoints.y);
+            // this.drawFrame(this.FrameCodinate.frameCorner[0].x,this.FrameCodinate.frameCorner[0].y,newWidth,newHeight);
+
+            this.drawCanvas();
+            this.ShapeManger?.drawPolygonShapes();
+            this.ShapeManger?.drawCustomShape();
+            this.ShapeManger?.drawShapes();
+            this.ShapeManger?.drawAlltextContent();
+
+            this.resizeFrame={mx:e.clientX,my:e.clientY,width:newWidth,height:newHeight};
+        }
         else if (this.mode==='imageResize'){
             if (this.corner!==null) {
                 this.resizeImage(e,this.corner,this.changeAspect);
@@ -554,6 +604,8 @@ export class CanvasDraw {
         }
         if (this.drawMode==='ractangle' && this.customeShape!=null) {
             this.ShapeManger?.polygonShapes.push(this.customeShape);
+            const newFrame = new shapeFrame(this.customeShape,this.InteractiveCtx!,this);
+            this.frameArray.push({frame:newFrame,index:this.ShapeManger!.polygonShapes.length-1,type:'polygon'});
             this.customeShape=null;
             this.startPoint={x:null,y:null};
         }
@@ -1001,7 +1053,7 @@ export class CanvasDraw {
         this.drawRectangle(newX, newY, lastX - newX, lastY - newY, { fillStyle: 'rgba(0, 0, 0, 0)', strokeStyle: 'rgba(248, 110, 181, 1)' });
 
         this.InteractiveCtx!.restore();
-
+        this.FrameCodinate.frameCorner=[{x:newX,y:newY},{x:lastX,y:lastY}];
         this.FrameCodinate.cornerRact = corners,
         this.FrameCodinate.size=squareSize;
         this.FrameCodinate.circlePoint={x:mx,y:my,radius:5};
